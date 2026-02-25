@@ -1,0 +1,39 @@
+# EasyMultiProfiler V3.0 R 包描述文件
+Package: EasyMultiProfiler
+Type: Package
+Title: Unified Multi-Omics Analysis Platform
+Version: 3.0.0
+Authors@R: c(
+    person("Xie", "Lab", email = "contact@xielab.net", role = c("aut", "cre"))
+)
+Description: EasyMultiProfiler is a unified platform for multi-omics data analysis,
+    including RNA-seq, scRNA-seq, ChIP-seq, CUT&Tag, proteomics, metabolomics,
+    microbiome, and multi-omics integration.
+License: MIT + file LICENSE
+Encoding: UTF-8
+LazyData: true
+RoxygenNote: 7.2.3
+Depends:
+    R (>= 4.0.0)
+Imports:
+    Seurat (>= 4.0.0),
+    ChIPseeker (>= 1.30.0),
+    clusterProfiler (>= 4.0.0),
+    MOFA2 (>= 1.0.0),
+    dplyr (>= 1.0.0),
+    ggplot2 (>= 3.3.0),
+    jsonlite (>= 1.7.0),
+    optparse (>= 1.6.0)
+Suggests:
+    SingleR,
+    celldex,
+    monocle3,
+    DiffBind,
+    mixOmics,
+    iClusterPlus,
+    testthat (>= 3.0.0),
+    knitr,
+    rmarkdown
+VignetteBuilder: knitr
+URL: https://github.com/xielab2017/EasyMultiProfiler-V3
+BugReports: https://github.com/xielab2017/EasyMultiProfiler-V3/issues
