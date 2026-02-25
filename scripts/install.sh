@@ -53,7 +53,9 @@ case $choice in
         
         # 安装R包
         echo "📦 安装R包..."
+        cd r-package
         R -e "devtools::install('.', dependencies=TRUE)"
+        cd ..
         
         # 安装Python依赖
         echo "📦 安装Python依赖..."
@@ -61,16 +63,25 @@ case $choice in
         python3 -m venv venv
         source venv/bin/activate
         pip install -r requirements.txt
+        cd ../..
         
-        # 安装前端依赖
-        echo "📦 安装前端依赖..."
-        cd ../frontend
-        npm install
-        npm run build
+        # 检查前端
+        if [ -f "web/frontend/package.json" ]; then
+            echo "📦 安装前端依赖..."
+            cd web/frontend
+            npm install
+            npm run build
+            # 复制构建文件到后端
+            mkdir -p ../backend/static
+            cp -r build/* ../backend/static/ 2>/dev/null || true
+            cd ../..
+        else
+            echo "⚠️  前端代码未找到，跳过前端构建"
+        fi
         
         echo ""
         echo "✅ 安装完成！"
-        echo "🚀 启动命令: cd $INSTALL_DIR && ./start.sh"
+        echo "🚀 启动命令: cd $INSTALL_DIR && ./scripts/start.sh"
         ;;
     *)
         echo "❌ 无效选项"
