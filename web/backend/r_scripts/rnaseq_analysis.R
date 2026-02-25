@@ -1,10 +1,13 @@
 #!/usr/bin/env Rscript
-# EasyMultiProfiler - RNA-seq 分析脚本 (调用 EasyMultiProfiler R包)
+# EasyMultiProfiler - RNA-seq 分析脚本 (基于验证的DESeq2标准流程)
 # 转录组数据分析：差异表达、富集分析、可视化
 
 suppressPackageStartupMessages({
   library(optparse)
   library(jsonlite)
+  library(DESeq2)
+  library(ggplot2)
+  library(pheatmap)
 })
 
 # 命令行参数
@@ -23,252 +26,216 @@ args <- parse_args(parser)
 params <- fromJSON(args$params)
 
 cat(sprintf("开始 RNA-seq 分析 - 任务ID: %s\n", args$task_id))
+cat("使用验证的标准DESeq2流程\n\n")
 
-# 检查 EasyMultiProfiler 是否安装
-check_emp <- function() {
-  if (!requireNamespace("EasyMultiProfiler", quietly = TRUE)) {
-    cat("⚠️  EasyMultiProfiler 包未安装，尝试安装...\n")
-    if (!requireNamespace("devtools", quietly = TRUE)) {
-      install.packages("devtools", repos = "https://cloud.r-project.org/")
-    }
-    devtools::install_github("xielab2017/EasyMultiProfiler", upgrade = "never")
-  }
-  library(EasyMultiProfiler)
+# 确保输出目录存在
+if (!is.null(args$output)) {
+  dir.create(args$output, recursive=TRUE, showWarnings=FALSE)
 }
-
-tryCatch({
-  check_emp()
-  cat("✅ EasyMultiProfiler 加载成功\n")
-}, error = function(e) {
-  cat(sprintf("❌ EasyMultiProfiler 加载失败: %s\n", e$message))
-  cat("将使用基础分析流程...\n")
-})
 
 # 主分析流程
-try {
-  # 读取表达矩阵
+tryCatch({
+  # 1. 读取表达矩阵
+  cat("步骤1: 读取表达矩阵...\n")
   count_data <- read.csv(args$input, row.names=1, check.names=FALSE)
-  cat(sprintf("表达矩阵维度: %d 基因 x %d 样本\n", nrow(count_data), ncol(count_data)))
+  cat(sprintf("✅ 表达矩阵: %d 基因 x %d 样本\n", nrow(count_data), ncol(count_data)))
   
-  # 准备分组信息（从文件名或元数据文件）
-  group_info <- NULL
+  # 2. 读取分组信息
+  cat("\n步骤2: 读取分组信息...\n")
   if (!is.null(args$metadata) && file.exists(args$metadata)) {
     group_info <- read.csv(args$metadata, row.names=1)
-    cat(sprintf("读取分组信息: %d 样本\n", nrow(group_info)))
+    cat(sprintf("✅ 分组信息: %d 样本\n", nrow(group_info)))
   } else {
-    # 创建默认分组（假设前一半是A组，后一半是B组）
+    # 创建默认分组
     n_samples <- ncol(count_data)
     group_info <- data.frame(
-      Group = c(rep("Control", floor(n_samples/2)), rep("Treatment", ceiling(n_samples/2))),
+      Group = factor(c(rep("Control", floor(n_samples/2)), rep("Treatment", ceiling(n_samples/2)))),
       row.names = colnames(count_data)
     )
-    cat("使用默认分组: Control vs Treatment\n")
+    cat("✅ 使用默认分组: Control vs Treatment\n")
   }
   
-  # 使用 EasyMultiProfiler 进行分析
-  if (exists("EMP_easy_normal_import") && exists("EMP_diff_analysis")) {
+  # 验证Mapping
+  if (!all(colnames(count_data) %in% rownames(group_info))) {
+    stop("样本名不匹配！请检查数据文件和元数据文件")
+  }
+  cat("✅ Mapping验证通过\n")
+  
+  # 3. 创建DESeq2对象
+  cat("\n步骤3: 创建DESeq2对象...\n")
+  dds <- DESeqDataSetFromMatrix(
+    countData = count_data,
+    colData = group_info,
+    design = ~ Group
+  )
+  
+  # 4. 过滤低表达基因
+  cat("\n步骤4: 过滤低表达基因...\n")
+  keep <- rowSums(counts(dds)) >= 10
+  dds <- dds[keep, ]
+  cat(sprintf("✅ 过滤后: %d 基因\n", nrow(dds)))
+  
+  # 5. 运行DESeq2差异分析
+  cat("\n步骤5: 运行DESeq2差异分析...\n")
+  cat("   (这可能需要几分钟)...\n")
+  dds <- DESeq(dds, quiet=TRUE)
+  
+  # 6. 获取结果
+  cat("\n步骤6: 提取差异分析结果...\n")
+  group_levels <- levels(dds$Group)
+  cat(sprintf("对比组: %s vs %s\n", group_levels[2], group_levels[1]))
+  res <- results(dds, contrast=c("Group", group_levels[2], group_levels[1]))
+  
+  # 转换为数据框并添加基因名
+  de_table <- as.data.frame(res)
+  de_table$GeneID <- rownames(de_table)
+  de_table <- de_table[, c("GeneID", setdiff(colnames(de_table), "GeneID"))]
+  
+  # 计算显著性
+  sig_table <- de_table[!is.na(de_table$padj) & de_table$padj < 0.05, ]
+  up_genes <- sum(sig_table$log2FoldChange > 0, na.rm=TRUE)
+  down_genes <- sum(sig_table$log2FoldChange < 0, na.rm=TRUE)
+  
+  cat(sprintf("✅ 差异分析完成\n"))
+  cat(sprintf("   总基因: %d\n", nrow(de_table)))
+  cat(sprintf("   显著差异基因 (p < 0.05): %d\n", nrow(sig_table)))
+  cat(sprintf("   上调: %d | 下调: %d\n", up_genes, down_genes))
+  
+  # 7. 生成可视化
+  cat("\n步骤7: 生成可视化...\n")
+  output_dir <- args$output
+  
+  # 火山图
+  tryCatch({
+    de_table$significant <- ifelse(!is.na(de_table$padj) & de_table$padj < 0.05,
+                                     ifelse(de_table$log2FoldChange > 0, "Up", "Down"),
+                                     "Not Sig")
     
-    cat("🔄 使用 EasyMultiProfiler 进行分析...\n")
+    p_volcano <- ggplot(de_table, aes(x=log2FoldChange, y=-log10(pvalue), color=significant)) +
+      geom_point(alpha=0.6, size=1.5) +
+      scale_color_manual(values=c("Up"="red", "Down"="blue", "Not Sig"="grey")) +
+      theme_bw() +
+      labs(title="Volcano Plot",
+           x="Log2 Fold Change",
+           y="-Log10 P-value",
+           color="Significance") +
+      theme(legend.position="top")
     
-    # 1. 导入数据创建 EMPT 对象
-    cat("步骤1: 导入数据...\n")
-    MAE <- EMP_easy_normal_import(
-      data = count_data,
-      assay = "rnaseq",
-      assay_name = "counts",
-      coldata = group_info,
-      output = "MAE"
-    )
+    ggsave(file.path(output_dir, "volcano_plot.png"), p_volcano, width=10, height=8, dpi=150)
+    cat("✅ 火山图已保存: volcano_plot.png\n")
+  }, error=function(e) {
+    cat(sprintf("⚠️ 火山图生成失败: %s\n", e$message))
+  })
+  
+  # MA图
+  tryCatch({
+    p_ma <- ggplot(de_table, aes(x=log10(baseMean + 1), y=log2FoldChange, color=significant)) +
+      geom_point(alpha=0.6, size=1.5) +
+      scale_color_manual(values=c("Up"="red", "Down"="blue", "Not Sig"="grey")) +
+      theme_bw() +
+      labs(title="MA Plot",
+           x="Log10 Mean Expression",
+           y="Log2 Fold Change") +
+      theme(legend.position="none")
     
-    cat(sprintf("✅ 创建 MAE 对象: %d 特征 x %d 样本\n", 
-                nrow(SummarizedExperiment::assay(MAE[[1]])),
-                ncol(SummarizedExperiment::assay(MAE[[1]]))))
-    
-    # 2. 差异分析
-    cat("步骤2: 差异表达分析...\n")
-    de_method <- params$de$method %||% "DESeq2"
-    fc_threshold <- params$de$fc_threshold %||% 2
-    p_threshold <- params$de$pvalue %||% 0.05
-    
-    # 构建 formula
-    group_col <- colnames(group_info)[1]
-    formula_str <- paste0("~ 0 + ", group_col)
-    
-    # 获取组水平用于比较
-    group_levels <- unique(group_info[[group_col]])
-    if (length(group_levels) >= 2) {
-      group_level_vec <- c(group_levels[1], group_levels[2])
-    } else {
-      group_level_vec <- NULL
-    }
-    
-    # 执行差异分析
-    diff_result <- tryCatch({
-      MAE |\u003e 
-        EMP_diff_analysis(
-          experiment = "rnaseq",
-          .formula = as.formula(formula_str),
-          method = de_method,
-          p.adjust = "fdr",
-          group_level = group_level_vec,
-          action = "add"
-        )
-    }, error = function(e) {
-      cat(sprintf("差异分析警告: %s\n", e$message))
-      # 降级使用 t.test
-      cat("降级使用 t.test...\n")
-      MAE |\u003e 
-        EMP_diff_analysis(
-          experiment = "rnaseq",
-          method = "t.test",
-          estimate_group = group_col,
-          p.adjust = "fdr",
-          action = "add"
-        )
-    })
-    
-    # 3. 获取差异分析结果
-    cat("步骤3: 提取差异分析结果...\n")
-    de_table <- tryCatch({
-      diff_result |\u003e EMP_filter(.data$pvalue < p_threshold) |\u003e .get.result.EMPT()
-    }, error = function(e) {
-      # 直接从对象提取
-      rowData(diff_result[[1]]) |\u003e as.data.frame()
-    })
-    
-    cat(sprintf("✅ 差异分析完成: %d 差异基因\n", nrow(de_table)))
-    
-    # 4. 富集分析
-    enrichment_enabled <- !is.null(params$enrichment) && (params$enrichment$database %||% "") != ""
-    
-    if (enrichment_enabled && exists("EMP_enrich")) {
-      cat("步骤4: 富集分析...\n")
+    ggsave(file.path(output_dir, "ma_plot.png"), p_ma, width=10, height=8, dpi=150)
+    cat("✅ MA图已保存: ma_plot.png\n")
+  }, error=function(e) {
+    cat(sprintf("⚠️ MA图生成失败: %s\n", e$message))
+  })
+  
+  # 热图 (Top 50差异基因)
+  tryCatch({
+    if (nrow(sig_table) >= 10) {
+      top_genes <- head(order(sig_table$padj), min(50, nrow(sig_table)))
+      top_gene_names <- sig_table$GeneID[top_genes]
       
-      db_type <- switch(params$enrichment$database %||% "go_kegg",
-                         "go_kegg" = c("GO", "KEGG"),
-                         "go_only" = "GO",
-                         "kegg_only" = "KEGG",
-                         "reactome" = "Reactome",
-                         c("GO", "KEGG"))
+      # 标准化计数
+      vst_counts <- vst(dds, blind=FALSE)
+      mat <- assay(vst_counts)[top_gene_names, ]
+      mat <- mat - rowMeans(mat)
       
-      enrich_result <- tryCatch({
-        diff_result |\u003e
-          EMP_enrich(
-            experiment = "rnaseq",
-            OrgDb = "org.Hs.eg.db",  # 人类数据库
-            type = db_type,
-            pvalueCutoff = p_threshold,
-            action = "add"
-          )
-      }, error = function(e) {
-        cat(sprintf("富集分析警告: %s\n", e$message))
-        NULL
-      })
-      
-      if (!is.null(enrich_result)) {
-        cat("✅ 富集分析完成\n")
-      }
-    }
-    
-    # 5. 生成可视化
-    cat("步骤5: 生成可视化...\n")
-    output_dir <- args$output
-    
-    # 火山图
-    if (exists("EMP_volcano_plot")) {
-      tryCatch({
-        p_volcano <- diff_result |\u003e EMP_volcano_plot()
-        ggplot2::ggsave(file.path(output_dir, "volcano_plot.png"), p_volcano, 
-                       width = 10, height = 8, dpi = 300)
-        cat("✅ 火山图已保存\n")
-      }, error = function(e) {
-        cat(sprintf("火山图生成失败: %s\n", e$message))
-      })
-    }
-    
-    # 热图
-    if (exists("EMP_heatmap_plot")) {
-      tryCatch({
-        p_heatmap <- diff_result |\u003e EMP_heatmap_plot()
-        ggplot2::ggsave(file.path(output_dir, "heatmap.png"), p_heatmap,
-                       width = 12, height = 10, dpi = 300)
-        cat("✅ 热图已保存\n")
-      }, error = function(e) {
-        cat(sprintf("热图生成失败: %s\n", e$message))
-      })
-    }
-    
-    # MA Plot
-    tryCatch({
-      png(file.path(output_dir, "ma_plot.png"), width=800, height=600)
-      # 使用基础图形
-      if ("log2FoldChange" %in% colnames(de_table) && "baseMean" %in% colnames(de_table)) {
-        plot(log2(de_table$baseMean + 1), de_table$log2FoldChange,
-             pch=20, col=ifelse(de_table$pvalue < p_threshold, "red", "grey"),
-             xlab="log2 Mean Expression", ylab="log2 Fold Change",
-             main="MA Plot")
-        abline(h=c(-1, 0, 1), col=c("blue", "black", "blue"), lty=c(2,1,2))
-      }
+      # 保存热图
+      png(file.path(output_dir, "heatmap.png"), width=800, height=1000)
+      pheatmap(mat, 
+               cluster_cols=TRUE, 
+               cluster_rows=TRUE,
+               annotation_col=as.data.frame(colData(dds)),
+               show_rownames=FALSE,
+               main="Top Differential Genes Heatmap")
       dev.off()
-      cat("✅ MA Plot 已保存\n")
-    }, error = function(e) {
-      cat(sprintf("MA Plot 生成失败: %s\n", e$message))
-    })
-    
-    # 6. 保存结果
-    cat("步骤6: 保存结果...\n")
-    write.csv(de_table, file.path(output_dir, "differential_expression.csv"), row.names=FALSE)
-    
-    # 保存统计数据
-    stats <- list(
-      module = "rnaseq",
-      samples = ncol(count_data),
-      genes = nrow(count_data),
-      differential_genes = nrow(de_table),
-      up_regulated = sum(de_table$log2FoldChange > 0, na.rm=TRUE),
-      down_regulated = sum(de_table$log2FoldChange < 0, na.rm=TRUE),
-      de_method = de_method,
-      fc_threshold = fc_threshold,
-      pvalue_threshold = p_threshold,
-      task_id = args$task_id
-    )
-    write_json(stats, file.path(output_dir, "stats.json"))
-    
-    # 生成报告
-    if (exists("EMP_report")) {
-      tryCatch({
-        diff_result |\u003e EMP_report(output = file.path(output_dir, "report.html"))
-        cat("✅ HTML 报告已生成\n")
-      }, error = function(e) {
-        cat(sprintf("报告生成失败: %s\n", e$message))
-      })
+      cat("✅ 热图已保存: heatmap.png\n")
     }
-    
-    cat("✅ RNA-seq 分析完成！\n")
-    
-  } else {
-    # 降级到基础分析
-    cat("⚠️  EasyMultiProfiler 函数不可用，使用基础分析...\n")
-    source(file.path(dirname(getScriptPath()), "generic_analysis.R"))
-  }
+  }, error=function(e) {
+    cat(sprintf("⚠️ 热图生成失败: %s\n", e$message))
+  })
   
-} catch (e) {
-  cat(sprintf("❌ 分析失败: %s\n", e$message))
-  writeLines(as.character(e), file.path(args$output, "error.log"))
+  # 8. 保存结果
+  cat("\n步骤8: 保存结果...\n")
+  write.csv(de_table, file.path(output_dir, "differential_expression.csv"), row.names=FALSE)
+  write.csv(sig_table, file.path(output_dir, "significant_genes.csv"), row.names=FALSE)
+  cat("✅ 结果表格已保存\n")
+  
+  # 保存统计数据
+  stats <- list(
+    module = "rnaseq",
+    samples = ncol(count_data),
+    genes_total = nrow(count_data),
+    genes_filtered = nrow(dds),
+    differential_genes = nrow(sig_table),
+    up_regulated = up_genes,
+    down_regulated = down_genes,
+    de_method = "DESeq2",
+    group_comparison = paste(group_levels[2], "vs", group_levels[1]),
+    task_id = args$task_id,
+    status = "completed"
+  )
+  write_json(stats, file.path(output_dir, "stats.json"), pretty=TRUE)
+  cat("✅ 统计信息已保存\n")
+  
+  # 生成简单的HTML报告
+  html_report <- sprintf("
+  <html>
+  <head><title>RNA-seq分析报告</title></head>
+  <body>
+    <h1>EasyMultiProfiler RNA-seq 分析报告</h1>
+    <p>任务ID: %s</p>
+    <p>分析时间: %s</p>
+    <h2>统计摘要</h2>
+    <ul>
+      <li>总样本数: %d</li>
+      <li>总基因数: %d</li>
+      <li>显著差异基因: %d</li>
+      <li>上调基因: %d</li>
+      <li>下调基因: %d</li>
+    </ul>
+    <h2>可视化结果</h2>
+    <img src='volcano_plot.png' width='600'/><br/>
+    <img src='ma_plot.png' width='600'/><br/>
+    <img src='heatmap.png' width='600'/><br/>
+  </body>
+  </html>
+  ", 
+  args$task_id, format(Sys.time(), "%Y-%m-%d %H:%M:%S"),
+  stats$samples, stats$genes_total, stats$differential_genes,
+  stats$up_regulated, stats$down_regulated)
+  
+  writeLines(html_report, file.path(output_dir, "report.html"))
+  cat("✅ HTML报告已生成: report.html\n")
+  
+  cat("\n✅ RNA-seq 分析全部完成！\n")
+  
+}, error = function(e) {
+  cat(sprintf("\n❌ 分析失败: %s\n", e$message))
+  
+  # 保存错误信息
+  error_info <- list(
+    task_id = args$task_id,
+    status = "failed",
+    error = e$message,
+    timestamp = format(Sys.time())
+  )
+  write_json(error_info, file.path(args$output, "error.json"))
+  
   quit(status=1)
-}
-
-# 辅助函数
-`%||%` <- function(x, y) if (is.null(x)) y else x
-
-getScriptPath <- function() {
-  cmd_args <- commandArgs(trailingOnly=FALSE)
-  needle <- "--file="
-  match <- grep(needle, cmd_args)
-  if (length(match) > 0) {
-    return(normalizePath(sub(needle, "", cmd_args[match])))
-  }
-  return(normalizePath(sys.frames()[[1]]$ofile))
-}
-
-cat("RNA-seq 分析脚本执行成功\n")
+})

@@ -333,7 +333,7 @@ def run_analysis(task_id, file_id, module, params, result_dir):
         task['progress'] = 100
         task['message'] = '分析完成'
         
-    } catch Exception as e:
+    except Exception as e:
         task['status'] = 'failed'
         task['message'] = f'分析异常: {str(e)}'
 
