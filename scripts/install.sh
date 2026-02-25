@@ -73,7 +73,7 @@ case $choice in
         echo "📦 安装R包..."
         echo "   这可能需要几分钟，请耐心等待..."
         cd r-package
-        R -e "options(repos = c(CRAN = 'https://cloud.r-project.org/')); if(!requireNamespace('devtools', quietly=TRUE)) install.packages('devtools'); devtools::install('.', dependencies=TRUE, upgrade='never')" 2>&1 | tee r_install.log
+        R -e "options(repos = c(CRAN = 'https://cloud.r-project.org/')); if(!requireNamespace('devtools', quietly=TRUE)) install.packages('devtools'); devtools::install_github('xielab2017/EasyMultiProfiler-V3', subdir = 'r-package', dependencies=TRUE, upgrade='never')" 2>&1 | tee r_install.log
         
         if [ $? -eq 0 ]; then
             echo "✅ R包安装成功"
