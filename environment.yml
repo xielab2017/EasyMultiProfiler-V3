@@ -1,0 +1,37 @@
+name: easymultiprofiler
+channels:
+  - conda-forge
+  - bioconda
+  - defaults
+dependencies:
+  # R environment
+  - r-base>=4.0.0
+  - r-devtools
+  - r-remotes
+  - r-optparse
+  - r-dplyr
+  - r-ggplot2
+  - r-jsonlite
+  - r-seurat
+  - bioconductor-biocmanager
+  - bioconductor-mofa2
+  - bioconductor-chipseeker
+  - bioconductor-clusterprofiler
+  
+  # Python environment
+  - python>=3.9
+  - pip
+  - nodejs>=18
+  
+  # System dependencies
+  - libcurl
+  - openssl
+  - libxml2
+  - cairo
+  - libgit2
+  
+  # Conda tools
+  - conda-build
+  - mamba
+
+# Pip dependencies will be installed separately

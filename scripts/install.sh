@@ -65,6 +65,8 @@ case $choice in
         echo ""
         echo "✅ 安装完成！"
         echo "🌐 访问: http://localhost:8080"
+        ;;
+    
     2)
         echo ""
         echo "🔧 本地安装..."
@@ -73,9 +75,77 @@ case $choice in
         echo "📦 安装R包..."
         echo "   这可能需要几分钟，请耐心等待..."
         cd r-package
-        R -e "options(repos = c(CRAN = 'https://cloud.r-project.org/')); if(!requireNamespace('devtools', quietly=TRUE)) install.packages('devtools'); devtools::install_github('xielab2017/EasyMultiProfiler-V3', subdir = 'r-package', dependencies=TRUE, upgrade='never')" 2>&1 | tee r_install.log
         
-        if [ $? -eq 0 ]; then
+        # 检查并修复 DESCRIPTION 文件格式
+        # 修复1: 删除注释行
+        if [ -f "DESCRIPTION" ]; then
+            if head -1 DESCRIPTION | grep -q "^#"; then
+                echo "   修复 DESCRIPTION 格式 (移除注释行)..."
+                sed -i '' '1d' DESCRIPTION
+            fi
+        fi
+        
+        # 修复2: 修复 Authors@R 字段的缩进（确保 ) 行有前导空格）
+        if [ -f "DESCRIPTION" ]; then
+            # 检查是否有单独的 ) 行（没有前导空格）
+            if grep -n "^)$" DESCRIPTION > /dev/null 2>&1; then
+                echo "   修复 DESCRIPTION 格式 (Authors@R 缩进)..."
+                sed -i '' 's/^)$/    )/' DESCRIPTION
+            fi
+        fi
+        
+        # 创建临时R脚本文件
+        R_SCRIPT_FILE=$(mktemp)
+        cat > "$R_SCRIPT_FILE" << 'RSCRIPT_EOF'
+options(repos = c(CRAN = "https://cloud.r-project.org/"))
+options(timeout = 300)
+
+# 安装 devtools（如果不存在）
+if (!requireNamespace("devtools", quietly = TRUE)) {
+    install.packages("devtools", repos = "https://cloud.r-project.org/")
+}
+
+# 配置 Bioconductor
+if (!requireNamespace("BiocManager", quietly = TRUE)) {
+    install.packages("BiocManager")
+}
+
+# 安装 Bioconductor 依赖
+bioc_deps <- c("MOFA2", "ChIPseeker", "clusterProfiler")
+for (dep in bioc_deps) {
+    if (!requireNamespace(dep, quietly = TRUE)) {
+        message(sprintf("从 Bioconductor 安装: %s", dep))
+        tryCatch({
+            BiocManager::install(dep, ask = FALSE)
+        }, error = function(e) {
+            message(sprintf("警告: %s 安装失败 - %s", dep, conditionMessage(e)))
+        })
+    }
+}
+
+# 安装 CRAN 核心依赖
+cran_deps <- c("Seurat", "optparse", "dplyr", "ggplot2", "jsonlite")
+for (dep in cran_deps) {
+    if (!requireNamespace(dep, quietly = TRUE)) {
+        message(sprintf("从 CRAN 安装: %s", dep))
+        tryCatch({
+            install.packages(dep, repos = "https://cloud.r-project.org/")
+        }, error = function(e) {
+            message(sprintf("警告: %s 安装失败 - %s", dep, conditionMessage(e)))
+        })
+    }
+}
+
+# 安装主包
+devtools::install(".", dependencies = TRUE, upgrade = "never")
+RSCRIPT_EOF
+        
+        # 执行R脚本
+        Rscript "$R_SCRIPT_FILE" 2>&1 | tee r_install.log
+        R_EXIT_CODE=${PIPESTATUS[0]}
+        rm -f "$R_SCRIPT_FILE"
+        
+        if [ $R_EXIT_CODE -eq 0 ]; then
             echo "✅ R包安装成功"
         else
             echo "❌ R包安装失败，查看日志: r-package/r_install.log"
