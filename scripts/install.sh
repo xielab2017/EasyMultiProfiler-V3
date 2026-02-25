@@ -37,24 +37,55 @@ case $choice in
     1)
         echo ""
         echo "🐳 Docker安装..."
-        if command -v docker >/dev/null; then
-            docker-compose up -d
+        
+        # 检查Docker是否安装
+        if ! command -v docker >/dev/null 2>&1; then
+            echo "❌ Docker未安装"
             echo ""
-            echo "✅ 安装完成！"
-            echo "🌐 访问: http://localhost:8080"
-        else
-            echo "❌ 请先安装Docker: https://docs.docker.com/get-docker/"
+            echo "请安装Docker:"
+            echo "  Mac: https://docs.docker.com/desktop/install/mac-install/"
+            echo "  Linux: https://docs.docker.com/engine/install/"
+            echo ""
+            echo "安装后请启动Docker Desktop或docker服务"
             exit 1
         fi
-        ;;
+        
+        # 检查Docker守护进程是否运行
+        if ! docker info >/dev/null 2>&1; then
+            echo "❌ Docker守护进程未运行"
+            echo ""
+            echo "请启动Docker:"
+            echo "  Mac: 打开Docker Desktop应用"
+            echo "  Linux: sudo systemctl start docker"
+            exit 1
+        fi
+        
+        echo "✅ Docker已安装并运行"
+        docker-compose up -d
+        echo ""
+        echo "✅ 安装完成！"
+        echo "🌐 访问: http://localhost:8080"
     2)
         echo ""
         echo "🔧 本地安装..."
         
         # 安装R包
         echo "📦 安装R包..."
+        echo "   这可能需要几分钟，请耐心等待..."
         cd r-package
-        R -e "devtools::install('.', dependencies=TRUE)"
+        R -e "options(repos = c(CRAN = 'https://cloud.r-project.org/')); if(!requireNamespace('devtools', quietly=TRUE)) install.packages('devtools'); devtools::install('.', dependencies=TRUE, upgrade='never')" 2>&1 | tee r_install.log
+        
+        if [ $? -eq 0 ]; then
+            echo "✅ R包安装成功"
+        else
+            echo "❌ R包安装失败，查看日志: r-package/r_install.log"
+            echo ""
+            echo "常见问题:"
+            echo "  1. 缺少系统依赖 (如libcurl, libssl等)"
+            echo "  2. 网络连接问题"
+            echo "  3. 某些Bioconductor包需要单独安装"
+            exit 1
+        fi
         cd ..
         
         # 安装Python依赖
